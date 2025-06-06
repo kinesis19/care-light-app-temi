@@ -1,3 +1,15 @@
 <resources>
     <string name="app_name">CareLightTemi</string>
+
+
+    <!-- activity_login -->
+    <string name="login_btn_text">로그인하기</string>
+    <string name="signup_btn_text">회원가입하기</string>
+    <string name="login_title_text">로그인</string>
+    <string name="login_description_text">로그인을 하고 편안한 서비스를 이용하세요!</string>
+    <string name="find_pw_btn">비밀번호 찾기</string>
+
+    <string name="hint_email_address_text">이메일 주소를 입력하세요</string>
+    <string name="hint_pw_text">비밀번호를 입력하세요</string>
+
 </resources>
