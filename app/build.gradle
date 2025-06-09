@@ -24,6 +24,9 @@ android {
         }
     }
     compileOptions {
+
+        // Java 8+ API 디슈가링 활성화
+        coreLibraryDesugaringEnabled true
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
     }
@@ -45,4 +48,6 @@ dependencies {
     implementation 'com.google.firebase:firebase-auth'
 
     implementation'com.robotemi:sdk:0.10.77'
+
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
 }
