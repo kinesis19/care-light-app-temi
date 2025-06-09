@@ -62,6 +62,8 @@ public class HomeActivity extends AppCompatActivity implements
 
     // 가장 최근에 처리한 명령의 타임스탬프를 저장 (중복 실행 방지용)
     private com.google.firebase.Timestamp lastProcessedTimestamp = null;
+    // 도착 후, 회전할 각도
+    private Float targetAngleOnArrival = null;
 
 
 
@@ -215,60 +217,67 @@ public class HomeActivity extends AppCompatActivity implements
     // Feat: 수신된 명령을 처리하는 메소드
     private void processTemiCommand(Map<String, Object> commandData) {
         String command = (String) commandData.get("command");
-        String message = (String) commandData.get("message");
 
-        if (command == null || message == null) {
-            Log.w(TAG, "Command or message is null.");
+        if (command == null) {
+            Log.w(TAG, "Command is null.");
             return;
         }
 
-        Log.d(TAG, "Processing command: " + command + " with message: " + message);
+        Log.d(TAG, "Processing command: " + command);
 
         switch (command) {
             case "showToast":
-                Toast.makeText(HomeActivity.this, "명령 수신: " + message, Toast.LENGTH_LONG).show();
-                break;
-
             case "speak":
-                message = "아 집에 가고 싶다 피곤하다 ";
-                speak(message);
+                String message = (String) commandData.get("message");
+                if (message != null) {
+                    if (command.equals("showToast")) {
+                        Toast.makeText(HomeActivity.this, "명령 수신: " + message, Toast.LENGTH_LONG).show();
+                    } else {
+                        speak(message);
+                    }
+                }
                 break;
 
             case "getMedicine":
-                // 저장된 위치 목록에 "Room1"이 있는지 확인
-                List<String> locations = robot.getLocations();
+                // 파라미터 맵 추출
+                Object paramsObject = commandData.get("parameters");
+                if (paramsObject instanceof Map) {
+                    Map<String, Object> params = (Map<String, Object>) paramsObject;
+                    String location = (String) params.get("location");
+                    // Firestore에서 숫자는 Long으로 오는 경우가 많으므로 Long으로 받고 float으로 변환
+                    Number angleNumber = (Number) params.get("angle");
+                    Float angle = (angleNumber != null) ? angleNumber.floatValue() : null;
 
-                // 현재 저장된 모든 위치를 로그로 출력
-                Log.d(TAG, "Available locations: " + locations.toString());
-
-                // 대소문자 구분 없이 정확한 이름 찾기
-                String targetLocation = null;
-                for (String loc : locations) {
-                    if (loc.equalsIgnoreCase("Room1")) {
-                        targetLocation = loc;
-                        break;
-                    }
-                }
-
-                if (targetLocation != null) {
-                    // "Room1"이 존재하면, 이동 시작 전 안내 메시지 말하기
-                    if (message != null && !message.isEmpty()) {
-                        speak(message);
+                    if (location != null) {
+                        goToLocationWithAngle(location, angle);
                     } else {
-                        speak("지금 바로 " + targetLocation + "으로 이동하겠습니다.");
+                        Log.w(TAG, "getMedicine command is missing 'location' parameter.");
                     }
-                    // 찾은 이름으로 이동 명령
-                    robot.goTo(targetLocation);
-                } else {
-                    // "Room1"이 저장되어 있지 않은 경우
-                    String errorMessage = "오류: 'Room1' 위치가 저장되어 있지 않습니다. 먼저 위치를 저장해주세요.";
-                    speak(errorMessage);
-                    Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show();
                 }
                 break;
+
             default:
                 Log.w(TAG, "Unknown command received: " + command);
                 break;
+        }
+    }
+
+    // Feat: 위치 이동 및 도착 후 회전 기능
+    private void goToLocationWithAngle(String location, Float angle) {
+        List<String> locations = robot.getLocations();
+        boolean locationExists = locations.stream().anyMatch(loc -> loc.equalsIgnoreCase(location));
+
+        if (locationExists) {
+            // 도착 후 회전할 각도를 멤버 변수에 저장
+            this.targetAngleOnArrival = angle;
+            speak(location + "(으)로 이동합니다.");
+            robot.goTo(location);
+        } else {
+            String errorMessage = "오류: '" + location + "' 위치가 저장되어 있지 않습니다.";
+            speak(errorMessage);
+            Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show();
+            // 이동 명령이 아니므로 임시 각도 초기화
+            this.targetAngleOnArrival = null;
         }
     }
 
@@ -320,19 +329,21 @@ public class HomeActivity extends AppCompatActivity implements
 
         switch (status) {
             case OnGoToLocationStatusChangedListener.START:
-                speak(location + "으로 이동을 시작합니다.");
+                // speak(location + "으로 이동을 시작합니다."); // goToLocationWithAngle 메소드에서 이미 말했으므로 중복될 수 있어 주석 처리
                 break;
-            case OnGoToLocationStatusChangedListener.CALCULATING:
-                // 경로 계산 중
-                break;
-            case OnGoToLocationStatusChangedListener.GOING:
-                // 이동 중
-                break;
+
             case OnGoToLocationStatusChangedListener.COMPLETE:
                 speak(location + "에 도착했습니다.");
+                if (targetAngleOnArrival != null) {
+                    speak(targetAngleOnArrival + "도 회전합니다.");
+                    robot.turnBy(targetAngleOnArrival.intValue(), 1.0f); // 1.0f는 속도, 조절 가능
+                    targetAngleOnArrival = null; // 사용 후에는 반드시 null로 초기화하여 다음 이동에 영향 없게 함
+                }
                 break;
+
             case OnGoToLocationStatusChangedListener.ABORT:
                 speak("이동이 취소되었습니다.");
+                targetAngleOnArrival = null;
                 break;
         }
     }
