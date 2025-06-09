@@ -4,6 +4,7 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
+import android.widget.Button;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
@@ -38,6 +39,7 @@ import com.robotemi.sdk.listeners.OnRobotReadyListener;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public class HomeActivity extends AppCompatActivity implements
         Robot.NlpListener,
@@ -79,6 +81,52 @@ public class HomeActivity extends AppCompatActivity implements
         db = FirebaseFirestore.getInstance();
 
         robot = Robot.getInstance();
+
+        Button btnSaveLocation = findViewById(R.id.btn_save_location);
+        btnSaveLocation.setOnClickListener(v -> {
+            String locationName = "Room1";
+
+            // 현재 저장된 모든 위치 목록을 가져옴
+            List<String> locations = robot.getLocations();
+
+            // 이미 존재하는지 확인함.
+            boolean locationExists = false;
+            for (String loc : locations) {
+                if (loc.equalsIgnoreCase(locationName)) {
+                    locationExists = true;
+                    break;
+                }
+            }
+
+            // 만약 위치가 존재한다면 삭제함.
+            if (locationExists) {
+                boolean deleteResult = robot.deleteLocation(locationName);
+                Log.d(TAG, "Location '" + locationName + "' already exists. Deleting it first. Deletion result: " + deleteResult);
+            }
+
+            // 현재 위치를 "Room1"으로 저장함.
+            boolean saveResult = robot.saveLocation(locationName);
+            if (saveResult) {
+                speak("현재 위치를 " + locationName + "으로 저장합니다.");
+                Toast.makeText(this, locationName + " 위치 저장 요청됨", Toast.LENGTH_SHORT).show();
+            } else {
+                speak(locationName + " 위치 저장에 실패했습니다. 지도가 생성되었는지, 로봇이 안정된 상태인지 확인해주세요.");
+                Toast.makeText(this, locationName + " 위치 저장 실패", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        Button btnDeleteLocation = findViewById(R.id.btn_delete_location); // XML에 해당 ID의 버튼 추가 필요
+        btnDeleteLocation.setOnClickListener(v -> {
+            String locationToDelete = "Room1";
+            boolean result = robot.deleteLocation(locationToDelete);
+            if (result) {
+                speak(locationToDelete + " 위치를 삭제했습니다.");
+                Toast.makeText(this, locationToDelete + " 위치 삭제 성공", Toast.LENGTH_SHORT).show();
+            } else {
+                speak(locationToDelete + " 위치 삭제에 실패했습니다.");
+                Toast.makeText(this, locationToDelete + " 위치 삭제 실패", Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
     @Override
@@ -186,11 +234,38 @@ public class HomeActivity extends AppCompatActivity implements
                 speak(message);
                 break;
 
-            // TODO: 향후 다른 명령 추가
-            // case "navigateTo":
-            //     robot.goTo(message); // message에 장소 이름("주방", "거실" 등)을 담아 보냄
-            //     break;
+            case "getMedicine":
+                // 저장된 위치 목록에 "Room1"이 있는지 확인
+                List<String> locations = robot.getLocations();
 
+                // 현재 저장된 모든 위치를 로그로 출력
+                Log.d(TAG, "Available locations: " + locations.toString());
+
+                // 대소문자 구분 없이 정확한 이름 찾기
+                String targetLocation = null;
+                for (String loc : locations) {
+                    if (loc.equalsIgnoreCase("Room1")) {
+                        targetLocation = loc;
+                        break;
+                    }
+                }
+
+                if (targetLocation != null) {
+                    // "Room1"이 존재하면, 이동 시작 전 안내 메시지 말하기
+                    if (message != null && !message.isEmpty()) {
+                        speak(message);
+                    } else {
+                        speak("지금 바로 " + targetLocation + "으로 이동하겠습니다.");
+                    }
+                    // 찾은 이름으로 이동 명령
+                    robot.goTo(targetLocation);
+                } else {
+                    // "Room1"이 저장되어 있지 않은 경우
+                    String errorMessage = "오류: 'Room1' 위치가 저장되어 있지 않습니다. 먼저 위치를 저장해주세요.";
+                    speak(errorMessage);
+                    Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show();
+                }
+                break;
             default:
                 Log.w(TAG, "Unknown command received: " + command);
                 break;
@@ -239,13 +314,35 @@ public class HomeActivity extends AppCompatActivity implements
     }
 
     @Override
-    public void onGoToLocationStatusChanged(@NonNull String s, @NonNull String s1, int i, @NonNull String s2) {
+    public void onGoToLocationStatusChanged(@NonNull String location, @NonNull String status, int descriptionId, @NonNull String description) {
+        Log.d(TAG, "onGoToLocationStatusChanged: location=" + location + ", status=" + status + ", description=" + description);
+        Toast.makeText(this, location + "으로 이동: " + status, Toast.LENGTH_SHORT).show();
 
+        switch (status) {
+            case OnGoToLocationStatusChangedListener.START:
+                speak(location + "으로 이동을 시작합니다.");
+                break;
+            case OnGoToLocationStatusChangedListener.CALCULATING:
+                // 경로 계산 중
+                break;
+            case OnGoToLocationStatusChangedListener.GOING:
+                // 이동 중
+                break;
+            case OnGoToLocationStatusChangedListener.COMPLETE:
+                speak(location + "에 도착했습니다.");
+                break;
+            case OnGoToLocationStatusChangedListener.ABORT:
+                speak("이동이 취소되었습니다.");
+                break;
+        }
     }
 
     @Override
-    public void onLocationsUpdated(@NonNull List<String> list) {
-
+    public void onLocationsUpdated(@NonNull List<String> locations) {
+        // 위치가 새로 저장되거나 업데이트될 때마다 호출됨
+        String locationList = locations.stream().collect(Collectors.joining(", "));
+        Log.d(TAG, "Updated locations: [" + locationList + "]");
+        Toast.makeText(this, "위치 목록이 업데이트되었습니다.", Toast.LENGTH_SHORT).show();
     }
 
     @Override
