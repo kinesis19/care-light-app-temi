@@ -141,7 +141,7 @@ public class HomeActivity extends AppCompatActivity implements
         }
 
         String userUid = currentUser.getUid();
-        final DocumentReference userDocRef = db.collection("users").document(userUid);
+        final DocumentReference docRef = db.collection("users").document(userUid);
 
         Log.d(TAG, "Setting up command listener for user: " + userUid);
         commandListener = userDocRef.addSnapshotListener((snapshot, e) -> {
@@ -152,23 +152,21 @@ public class HomeActivity extends AppCompatActivity implements
 
             if (snapshot != null && snapshot.exists()) {
                 Object commandObject = snapshot.get("temiCommand");
-
                 if (commandObject instanceof Map) {
-                    // 타입이 Map인 것을 확인했으므로 안전하게 형 변환
                     Map<String, Object> temiCommand = (Map<String, Object>) commandObject;
-
                     String command = (String) temiCommand.get("command");
                     com.google.firebase.Timestamp timestamp = (com.google.firebase.Timestamp) temiCommand.get("timestamp");
 
-                    if (timestamp == null) {
-                        Log.w(TAG, "Command received without a timestamp. Ignoring.");
-                        return; // timestamp가 없으면 이벤트를 처리하지 않음
-                    }
+                    if (command == null || timestamp == null) return;
 
                     if (!"none".equals(command) && (lastProcessedTimestamp == null || timestamp.compareTo(lastProcessedTimestamp) > 0)) {
                         lastProcessedTimestamp = timestamp;
                         processTemiCommand(temiCommand);
-                        clearCommandInFirestore(userDocRef);
+
+                        // [핵심 수정] skidJoy 명령이 아닐 경우에만 명령을 삭제합니다.
+                        if (!"skidJoy".equals(command)) {
+                            clearCommandInFirestore(docRef);
+                        }
                     }
                 }
             } else {
@@ -251,6 +249,19 @@ public class HomeActivity extends AppCompatActivity implements
                                 speak(locationName + " 위치 저장에 실패했습니다. 지도를 확인하고 다시 시도해주세요.");
                             }
                         }
+                    }
+                }
+                break;
+            }
+
+            case "skidJoy": {
+                Object paramsObject = commandData.get("parameters");
+                if (paramsObject instanceof Map) {
+                    Map<String, Object> params = (Map<String, Object>) paramsObject;
+                    Number linear = (Number) params.get("x");
+                    Number angular = (Number) params.get("y");
+                    if (linear != null && angular != null) {
+                        robot.skidJoy(linear.floatValue(), angular.floatValue());
                     }
                 }
                 break;
