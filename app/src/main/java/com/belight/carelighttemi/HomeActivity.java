@@ -264,19 +264,28 @@ public class HomeActivity extends AppCompatActivity implements
 
     // Feat: 위치 이동 및 도착 후 회전 기능
     private void goToLocationWithAngle(String location, Float angle) {
-        List<String> locations = robot.getLocations();
-        boolean locationExists = locations.stream().anyMatch(loc -> loc.equalsIgnoreCase(location));
+        List<String> savedLocations = robot.getLocations();
+        String matchedLocation = null;
 
-        if (locationExists) {
-            // 도착 후 회전할 각도를 멤버 변수에 저장
+        // 대소문자를 구분하지 않고 실제 저장된 위치 이름을 찾음
+        for (String savedLoc : savedLocations) {
+            if (savedLoc.equalsIgnoreCase(location)) {
+                matchedLocation = savedLoc; // 실제 저장된 이름(대소문자 포함)을 저장
+                break;
+            }
+        }
+
+        // 실제 저장된 위치를 찾았을 경우
+        if (matchedLocation != null) {
             this.targetAngleOnArrival = angle;
-            speak(location + "(으)로 이동합니다.");
-            robot.goTo(location);
+            // 실제 저장된 이름으로 TTS와 goTo 명령을 실행
+            speak(matchedLocation + "(으)로 이동합니다.");
+            robot.goTo(matchedLocation);
         } else {
+            // 위치를 찾지 못했을 경우
             String errorMessage = "오류: '" + location + "' 위치가 저장되어 있지 않습니다.";
             speak(errorMessage);
             Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show();
-            // 이동 명령이 아니므로 임시 각도 초기화
             this.targetAngleOnArrival = null;
         }
     }
@@ -324,23 +333,27 @@ public class HomeActivity extends AppCompatActivity implements
 
     @Override
     public void onGoToLocationStatusChanged(@NonNull String location, @NonNull String status, int descriptionId, @NonNull String description) {
-        Log.d(TAG, "onGoToLocationStatusChanged: location=" + location + ", status=" + status + ", description=" + description);
+        Log.i(TAG, "onGoToLocationStatusChanged: Received status '" + status + "' FOR location '" + location + "'. Description: " + description);
         Toast.makeText(this, location + "으로 이동: " + status, Toast.LENGTH_SHORT).show();
 
         switch (status) {
             case OnGoToLocationStatusChangedListener.START:
-                // speak(location + "으로 이동을 시작합니다."); // goToLocationWithAngle 메소드에서 이미 말했으므로 중복될 수 있어 주석 처리
+                speak(location + "으로 이동을 시작합니다.");
                 break;
-
+            case OnGoToLocationStatusChangedListener.CALCULATING:
+                // 경로 계산 중
+                break;
+            case OnGoToLocationStatusChangedListener.GOING:
+                // 이동 중
+                break;
             case OnGoToLocationStatusChangedListener.COMPLETE:
                 speak(location + "에 도착했습니다.");
                 if (targetAngleOnArrival != null) {
                     speak(targetAngleOnArrival + "도 회전합니다.");
-                    robot.turnBy(targetAngleOnArrival.intValue(), 1.0f); // 1.0f는 속도, 조절 가능
-                    targetAngleOnArrival = null; // 사용 후에는 반드시 null로 초기화하여 다음 이동에 영향 없게 함
+                    robot.turnBy(targetAngleOnArrival.intValue(), 1.0f);
+                    targetAngleOnArrival = null;
                 }
                 break;
-
             case OnGoToLocationStatusChangedListener.ABORT:
                 speak("이동이 취소되었습니다.");
                 targetAngleOnArrival = null;
