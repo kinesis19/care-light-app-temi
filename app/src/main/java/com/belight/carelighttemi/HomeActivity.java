@@ -267,6 +267,25 @@ public class HomeActivity extends AppCompatActivity implements
                 break;
             }
 
+            case "deleteLocation": {
+                Object paramsObject = commandData.get("parameters");
+                if (paramsObject instanceof Map) {
+                    Map<String, Object> params = (Map<String, Object>) paramsObject;
+                    String locationName = (String) params.get("locationName");
+                    if (locationName != null && !locationName.isEmpty()) {
+                        // 로봇의 deleteLocation 메소드 호출
+                        boolean deleteResult = robot.deleteLocation(locationName);
+                        // 결과에 따라 음성 피드백
+                        if (deleteResult) {
+                            speak(locationName + " 위치를 삭제했습니다.");
+                        } else {
+                            speak(locationName + " 위치 삭제에 실패했습니다.");
+                        }
+                    }
+                }
+                break;
+            }
+
             default: {
                 Log.w(TAG, "Unknown command received: " + command);
                 break;
