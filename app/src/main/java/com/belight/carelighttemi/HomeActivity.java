@@ -3,13 +3,10 @@ package com.belight.carelighttemi;
 import android.content.Intent;
 import android.os.Bundle;
 import android.util.Log;
-import android.view.View;
-import android.widget.Button;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable; // Nullable import 추가
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -21,10 +18,8 @@ import android.content.pm.PackageManager;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.firestore.DocumentReference;
-import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.FieldValue;
 import com.google.firebase.firestore.FirebaseFirestore;
-import com.google.firebase.firestore.FirebaseFirestoreException;
 import com.google.firebase.firestore.ListenerRegistration; // 리스너 관리를 위해 추가
 import com.robotemi.sdk.NlpResult;
 import com.robotemi.sdk.Robot;
@@ -33,7 +28,6 @@ import com.robotemi.sdk.activitystream.ActivityStreamPublishMessage;
 import com.robotemi.sdk.listeners.OnBeWithMeStatusChangedListener;
 import com.robotemi.sdk.listeners.OnGoToLocationStatusChangedListener;
 import com.robotemi.sdk.listeners.OnLocationsUpdatedListener;
-import com.robotemi.sdk.listeners.OnRobotLiftedListener;
 import com.robotemi.sdk.listeners.OnRobotReadyListener;
 
 import java.util.HashMap;
@@ -58,6 +52,7 @@ public class HomeActivity extends AppCompatActivity implements
 
     private FirebaseAuth mAuth;
     private FirebaseFirestore db;
+    private DocumentReference userDocRef; // 사용자 문서 참조
     private ListenerRegistration commandListener; // Firestore 리스너 참조 변수
 
     // 가장 최근에 처리한 명령의 타임스탬프를 저장 (중복 실행 방지용)
@@ -81,54 +76,12 @@ public class HomeActivity extends AppCompatActivity implements
         // Firebase 인스턴스 초기화
         mAuth = FirebaseAuth.getInstance();
         db = FirebaseFirestore.getInstance();
+        FirebaseUser currentUser = mAuth.getCurrentUser();
+        if (currentUser != null) {
+            userDocRef = db.collection("users").document(currentUser.getUid());
+        }
 
         robot = Robot.getInstance();
-
-        Button btnSaveLocation = findViewById(R.id.btn_save_location);
-        btnSaveLocation.setOnClickListener(v -> {
-            String locationName = "Room1";
-
-            // 현재 저장된 모든 위치 목록을 가져옴
-            List<String> locations = robot.getLocations();
-
-            // 이미 존재하는지 확인함.
-            boolean locationExists = false;
-            for (String loc : locations) {
-                if (loc.equalsIgnoreCase(locationName)) {
-                    locationExists = true;
-                    break;
-                }
-            }
-
-            // 만약 위치가 존재한다면 삭제함.
-            if (locationExists) {
-                boolean deleteResult = robot.deleteLocation(locationName);
-                Log.d(TAG, "Location '" + locationName + "' already exists. Deleting it first. Deletion result: " + deleteResult);
-            }
-
-            // 현재 위치를 "Room1"으로 저장함.
-            boolean saveResult = robot.saveLocation(locationName);
-            if (saveResult) {
-                speak("현재 위치를 " + locationName + "으로 저장합니다.");
-                Toast.makeText(this, locationName + " 위치 저장 요청됨", Toast.LENGTH_SHORT).show();
-            } else {
-                speak(locationName + " 위치 저장에 실패했습니다. 지도가 생성되었는지, 로봇이 안정된 상태인지 확인해주세요.");
-                Toast.makeText(this, locationName + " 위치 저장 실패", Toast.LENGTH_SHORT).show();
-            }
-        });
-
-        Button btnDeleteLocation = findViewById(R.id.btn_delete_location); // XML에 해당 ID의 버튼 추가 필요
-        btnDeleteLocation.setOnClickListener(v -> {
-            String locationToDelete = "Room1";
-            boolean result = robot.deleteLocation(locationToDelete);
-            if (result) {
-                speak(locationToDelete + " 위치를 삭제했습니다.");
-                Toast.makeText(this, locationToDelete + " 위치 삭제 성공", Toast.LENGTH_SHORT).show();
-            } else {
-                speak(locationToDelete + " 위치 삭제에 실패했습니다.");
-                Toast.makeText(this, locationToDelete + " 위치 삭제 실패", Toast.LENGTH_SHORT).show();
-            }
-        });
     }
 
     @Override
@@ -227,7 +180,7 @@ public class HomeActivity extends AppCompatActivity implements
 
         switch (command) {
             case "showToast":
-            case "speak":
+            case "speak": {
                 String message = (String) commandData.get("message");
                 if (message != null) {
                     if (command.equals("showToast")) {
@@ -237,8 +190,9 @@ public class HomeActivity extends AppCompatActivity implements
                     }
                 }
                 break;
+            }
 
-            case "getMedicine":
+            case "goToLocation": {
                 // 파라미터 맵 추출
                 Object paramsObject = commandData.get("parameters");
                 if (paramsObject instanceof Map) {
@@ -251,14 +205,51 @@ public class HomeActivity extends AppCompatActivity implements
                     if (location != null) {
                         goToLocationWithAngle(location, angle);
                     } else {
-                        Log.w(TAG, "getMedicine command is missing 'location' parameter.");
+                        Log.w(TAG, "goToLocation command is missing 'location' parameter.");
                     }
                 }
                 break;
+            }
 
-            default:
+            case "saveLocation": {
+                Object paramsObject = commandData.get("parameters");
+                if (paramsObject instanceof Map) {
+                    Map<String, Object> params = (Map<String, Object>) paramsObject;
+                    String locationName = (String) params.get("locationName");
+                    if (locationName != null && !locationName.isEmpty()) {
+
+                        // 현재 로봇에 저장된 모든 위치 목록을 가져옴.
+                        List<String> currentLocations = robot.getLocations();
+
+                        // 저장하려는 이름이 이미 존재하는지 확인.
+                        boolean nameExists = false;
+                        for (String existingLocation : currentLocations) {
+                            if (existingLocation.equalsIgnoreCase(locationName)) {
+                                nameExists = true;
+                                break;
+                            }
+                        }
+
+                        // 이름의 존재 여부에 따라 분기 처리함.
+                        if (nameExists) {
+                            speak("'" + locationName + "' 이라는 이름은 이미 사용 중입니다. 다른 이름을 입력해주세요.");
+                        } else {
+                            boolean saveResult = robot.saveLocation(locationName);
+                            if (saveResult) {
+                                speak(locationName + " 위치를 저장했습니다.");
+                            } else {
+                                speak(locationName + " 위치 저장에 실패했습니다. 지도를 확인하고 다시 시도해주세요.");
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+
+            default: {
                 Log.w(TAG, "Unknown command received: " + command);
                 break;
+            }
         }
     }
 
@@ -364,15 +355,22 @@ public class HomeActivity extends AppCompatActivity implements
     @Override
     public void onLocationsUpdated(@NonNull List<String> locations) {
         // 위치가 새로 저장되거나 업데이트될 때마다 호출됨
-        String locationList = locations.stream().collect(Collectors.joining(", "));
-        Log.d(TAG, "Updated locations: [" + locationList + "]");
+        String locationListStr = locations.stream().collect(Collectors.joining(", "));
+        Log.d(TAG, "Updated locations: [" + locationListStr + "]");
         Toast.makeText(this, "위치 목록이 업데이트되었습니다.", Toast.LENGTH_SHORT).show();
+
+        // Firestore의 robotState 필드를 업데이트
+        if (userDocRef != null) {
+            userDocRef.update("robotState.savedLocations", locations)
+                    .addOnSuccessListener(aVoid -> Log.d(TAG, "Successfully updated locations in Firestore."))
+                    .addOnFailureListener(e -> Log.w(TAG, "Error updating locations in Firestore.", e));
+        }
     }
 
     @Override
     public void onRobotReady(boolean isReady) {
 
-        if (isReady) { // 로봇이 준비되었다면
+        if (isReady) {
             try {
                 final ActivityInfo activityInfo = getPackageManager().getActivityInfo(getComponentName(), PackageManager.GET_META_DATA);
                 robot.onStart(activityInfo);
