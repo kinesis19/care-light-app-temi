@@ -7,6 +7,7 @@ import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -30,6 +31,11 @@ import com.robotemi.sdk.listeners.OnGoToLocationStatusChangedListener;
 import com.robotemi.sdk.listeners.OnLocationsUpdatedListener;
 import com.robotemi.sdk.listeners.OnRobotReadyListener;
 
+import com.robotemi.sdk.listeners.OnBatteryStatusChangedListener;
+import com.robotemi.sdk.permission.Permission;
+import com.robotemi.sdk.Robot;
+import com.robotemi.sdk.BatteryData;
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,7 +50,8 @@ public class HomeActivity extends AppCompatActivity implements
         Robot.TtsListener,
         OnBeWithMeStatusChangedListener,
         OnGoToLocationStatusChangedListener,
-        OnLocationsUpdatedListener {
+        OnLocationsUpdatedListener,
+        OnBatteryStatusChangedListener {
 
     private Robot robot;
 
@@ -59,6 +66,7 @@ public class HomeActivity extends AppCompatActivity implements
     private com.google.firebase.Timestamp lastProcessedTimestamp = null;
     // 도착 후, 회전할 각도
     private Float targetAngleOnArrival = null;
+    private int lastKnownBatteryPercentage = -1; // 배터리 상태
 
 
 
@@ -97,6 +105,7 @@ public class HomeActivity extends AppCompatActivity implements
         robot.addWakeupWordListener(this);
         robot.addTtsListener(this);
         robot.addOnLocationsUpdatedListener(this);
+        robot.addOnBatteryStatusChangedListener(this);
     }
 
     @Override
@@ -116,6 +125,7 @@ public class HomeActivity extends AppCompatActivity implements
         robot.removeWakeupWordListener(this);
         robot.removeTtsListener(this);
         robot.removeOnLocationsUpdateListener(this);
+        robot.removeOnBatteryStatusChangedListener(this);
     }
 
     private void setupCommandListener() {
@@ -392,6 +402,31 @@ public class HomeActivity extends AppCompatActivity implements
             Log.d(TAG, "Speaking: " + textToSpeak);
         } else {
             Log.d(TAG, "Speak command received with empty text.");
+        }
+    }
+
+    @Override
+    public void onBatteryStatusChanged(@Nullable BatteryData batteryData) {
+        BatteryData currentBatteryData = robot.getBatteryData();
+
+        // 만약 최신 배터리 정보를 가져올 수 없다면, 아무것도 하지 않고 종료함.
+        if (currentBatteryData == null) {
+            return;
+        }
+
+        int currentPercentage = currentBatteryData.getBatteryPercentage();
+
+        // 마지막으로 기록된 값과 다를 경우에만 Firestore 정보를 업데이트함.
+        if (currentPercentage != lastKnownBatteryPercentage) {
+            Log.d(TAG, "Battery status changed: " + currentPercentage + "%");
+
+            if (userDocRef != null) {
+                userDocRef.update("robotState.batteryPercentage", currentPercentage)
+                        .addOnSuccessListener(aVoid -> Log.d(TAG, "Successfully updated battery percentage in Firestore."))
+                        .addOnFailureListener(e -> Log.w(TAG, "Error updating battery percentage in Firestore.", e));
+            }
+            // 마지막으로 알려진 배터리 값을 현재 값으로 업데이트함.
+            lastKnownBatteryPercentage = currentPercentage;
         }
     }
 }
