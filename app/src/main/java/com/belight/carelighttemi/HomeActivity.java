@@ -67,6 +67,7 @@ public class HomeActivity extends AppCompatActivity implements
     // 도착 후, 회전할 각도
     private Float targetAngleOnArrival = null;
     private int lastKnownBatteryPercentage = -1; // 배터리 상태
+    private boolean lastKnownChargingStatus = false;
 
 
 
@@ -445,18 +446,31 @@ public class HomeActivity extends AppCompatActivity implements
         }
 
         int currentPercentage = currentBatteryData.getBatteryPercentage();
+        boolean isCurrentlyCharging = currentBatteryData.isCharging();
 
         // 마지막으로 기록된 값과 다를 경우에만 Firestore 정보를 업데이트함.
-        if (currentPercentage != lastKnownBatteryPercentage) {
-            Log.d(TAG, "Battery status changed: " + currentPercentage + "%");
+            if (currentPercentage != lastKnownBatteryPercentage || isCurrentlyCharging != lastKnownChargingStatus) {
+            Log.d(TAG, "Battery status changed: " + currentPercentage + "%, Charging: " + isCurrentlyCharging);
+
+            // 업데이트할 데이터를 담을 맵 생성
+            Map<String, Object> batteryUpdates = new HashMap<>();
+            batteryUpdates.put("robotState.batteryPercentage", currentPercentage);
+            batteryUpdates.put("robotState.isCharging", isCurrentlyCharging);
+
+            // 충전 중일 때만 상태 메시지를 오버라이드
+            if (isCurrentlyCharging) {
+                batteryUpdates.put("robotState.statusMessage", "충전 중");
+            }
 
             if (userDocRef != null) {
-                userDocRef.update("robotState.batteryPercentage", currentPercentage)
-                        .addOnSuccessListener(aVoid -> Log.d(TAG, "Successfully updated battery percentage in Firestore."))
-                        .addOnFailureListener(e -> Log.w(TAG, "Error updating battery percentage in Firestore.", e));
+                userDocRef.update(batteryUpdates)
+                        .addOnSuccessListener(aVoid -> Log.d(TAG, "Successfully updated battery status in Firestore."))
+                        .addOnFailureListener(e -> Log.w(TAG, "Error updating battery status in Firestore.", e));
             }
-            // 마지막으로 알려진 배터리 값을 현재 값으로 업데이트함.
+
+            // 마지막 상태 업데이트
             lastKnownBatteryPercentage = currentPercentage;
+            lastKnownChargingStatus = isCurrentlyCharging;
         }
     }
 }
