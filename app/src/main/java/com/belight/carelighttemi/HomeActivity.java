@@ -5,7 +5,9 @@ import android.os.Bundle;
 import android.util.Log;
 import android.widget.Toast;
 
-import androidx.activity.EdgeToEdge;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
+import android.content.Context;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
@@ -21,7 +23,7 @@ import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.firestore.DocumentReference;
 import com.google.firebase.firestore.FieldValue;
 import com.google.firebase.firestore.FirebaseFirestore;
-import com.google.firebase.firestore.ListenerRegistration; // 리스너 관리를 위해 추가
+import com.google.firebase.firestore.ListenerRegistration;
 import com.robotemi.sdk.NlpResult;
 import com.robotemi.sdk.Robot;
 import com.robotemi.sdk.TtsRequest;
@@ -30,12 +32,14 @@ import com.robotemi.sdk.listeners.OnBeWithMeStatusChangedListener;
 import com.robotemi.sdk.listeners.OnGoToLocationStatusChangedListener;
 import com.robotemi.sdk.listeners.OnLocationsUpdatedListener;
 import com.robotemi.sdk.listeners.OnRobotReadyListener;
-
 import com.robotemi.sdk.listeners.OnBatteryStatusChangedListener;
-import com.robotemi.sdk.permission.Permission;
-import com.robotemi.sdk.Robot;
+
 import com.robotemi.sdk.BatteryData;
 
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,22 +63,19 @@ public class HomeActivity extends AppCompatActivity implements
 
     private FirebaseAuth mAuth;
     private FirebaseFirestore db;
-    private DocumentReference userDocRef; // 사용자 문서 참조
-    private ListenerRegistration commandListener; // Firestore 리스너 참조 변수
+    private DocumentReference userDocRef;
+    private ListenerRegistration commandListener;
 
-    // 가장 최근에 처리한 명령의 타임스탬프를 저장 (중복 실행 방지용)
     private com.google.firebase.Timestamp lastProcessedTimestamp = null;
-    // 도착 후, 회전할 각도
-    private Float targetAngleOnArrival = null;
-    private int lastKnownBatteryPercentage = -1; // 배터리 상태
+    private int lastKnownBatteryPercentage = -1;
     private boolean lastKnownChargingStatus = false;
-
+    private boolean isWaitingForMedicationConfirmation = false;
+    private Float targetAngleOnArrival = null;
 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        EdgeToEdge.enable(this);
         setContentView(R.layout.activity_home);
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
@@ -82,24 +83,21 @@ public class HomeActivity extends AppCompatActivity implements
             return insets;
         });
 
-        // Firebase 인스턴스 초기화
         mAuth = FirebaseAuth.getInstance();
         db = FirebaseFirestore.getInstance();
+        robot = Robot.getInstance();
+
         FirebaseUser currentUser = mAuth.getCurrentUser();
         if (currentUser != null) {
             userDocRef = db.collection("users").document(currentUser.getUid());
         }
-
-        robot = Robot.getInstance();
     }
 
-    @Override
+  @Override
     protected void onStart() {
         super.onStart();
-        setupCommandListener();
-
-        robot.addOnRobotReadyListener(this);
         robot.addNlpListener(this);
+        robot.addOnRobotReadyListener(this);
         robot.addOnBeWithMeStatusChangedListener(this);
         robot.addOnGoToLocationStatusChangedListener(this);
         robot.addConversationViewAttachesListenerListener(this);
@@ -107,71 +105,49 @@ public class HomeActivity extends AppCompatActivity implements
         robot.addTtsListener(this);
         robot.addOnLocationsUpdatedListener(this);
         robot.addOnBatteryStatusChangedListener(this);
+
+        setupCommandListener();
     }
 
     @Override
     protected void onStop() {
         super.onStop();
-        // 액티비티가 보이지 않게 되면 리스너를 제거하여 리소스를 절약함.
-        if (commandListener != null) {
-            commandListener.remove();
-            Log.d(TAG, "Command listener removed.");
-        }
-
         robot.removeOnRobotReadyListener(this);
-        robot.removeNlpListener(this);
-        robot.removeOnBeWithMeStatusChangedListener(this);
+        robot.removeOnLocationsUpdateListener(this);
         robot.removeOnGoToLocationStatusChangedListener(this);
+        robot.removeOnBatteryStatusChangedListener(this);
+        robot.removeNlpListener(this);
         robot.removeConversationViewAttachesListenerListener(this);
         robot.removeWakeupWordListener(this);
         robot.removeTtsListener(this);
-        robot.removeOnLocationsUpdateListener(this);
-        robot.removeOnBatteryStatusChangedListener(this);
+        robot.removeOnBeWithMeStatusChangedListener(this);
+
+        if (commandListener != null) {
+            commandListener.remove();
+        }
     }
 
     private void setupCommandListener() {
-        FirebaseUser currentUser = mAuth.getCurrentUser();
-        if (currentUser == null) {
-            // 로그인 상태가 아니면 로그인 화면으로 보냅니다.
-            Log.e(TAG, "User not logged in. Redirecting to LoginActivity.");
-            Intent intent = new Intent(HomeActivity.this, LoginActivity.class);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-            startActivity(intent);
-            finish();
-            return;
-        }
-
-        String userUid = currentUser.getUid();
-        final DocumentReference docRef = db.collection("users").document(userUid);
-
-        Log.d(TAG, "Setting up command listener for user: " + userUid);
+        if (userDocRef == null) return;
         commandListener = userDocRef.addSnapshotListener((snapshot, e) -> {
-            if (e != null) {
-                Log.w(TAG, "Listen failed.", e);
+            if (e != null || snapshot == null || !snapshot.exists()) {
+                Log.w(TAG, "Listen error or data null", e);
                 return;
             }
+            Object commandObject = snapshot.get("temiCommand");
+            if (commandObject instanceof Map) {
+                Map<String, Object> temiCommand = (Map<String, Object>) commandObject;
+                String command = (String) temiCommand.get("command");
+                com.google.firebase.Timestamp timestamp = (com.google.firebase.Timestamp) temiCommand.get("timestamp");
+                if (command == null || timestamp == null) return;
 
-            if (snapshot != null && snapshot.exists()) {
-                Object commandObject = snapshot.get("temiCommand");
-                if (commandObject instanceof Map) {
-                    Map<String, Object> temiCommand = (Map<String, Object>) commandObject;
-                    String command = (String) temiCommand.get("command");
-                    com.google.firebase.Timestamp timestamp = (com.google.firebase.Timestamp) temiCommand.get("timestamp");
-
-                    if (command == null || timestamp == null) return;
-
-                    if (!"none".equals(command) && (lastProcessedTimestamp == null || timestamp.compareTo(lastProcessedTimestamp) > 0)) {
-                        lastProcessedTimestamp = timestamp;
-                        processTemiCommand(temiCommand);
-
-                        // [핵심 수정] skidJoy 명령이 아닐 경우에만 명령을 삭제합니다.
-                        if (!"skidJoy".equals(command)) {
-                            clearCommandInFirestore(docRef);
-                        }
+                if (!"none".equals(command) && (lastProcessedTimestamp == null || timestamp.compareTo(lastProcessedTimestamp) > 0)) {
+                    lastProcessedTimestamp = timestamp;
+                    processTemiCommand(temiCommand);
+                    if (!"skidJoy".equals(command)) {
+                        clearCommandInFirestore();
                     }
                 }
-            } else {
-                Log.d(TAG, "Current data: null");
             }
         });
     }
@@ -179,158 +155,112 @@ public class HomeActivity extends AppCompatActivity implements
     // Feat: 수신된 명령을 처리하는 메소드
     private void processTemiCommand(Map<String, Object> commandData) {
         String command = (String) commandData.get("command");
-
-        if (command == null) {
-            Log.w(TAG, "Command is null.");
-            return;
-        }
-
+        if (command == null) return;
         Log.d(TAG, "Processing command: " + command);
 
         switch (command) {
-            case "showToast":
             case "speak": {
                 String message = (String) commandData.get("message");
-                if (message != null) {
-                    if (command.equals("showToast")) {
-                        Toast.makeText(HomeActivity.this, "명령 수신: " + message, Toast.LENGTH_LONG).show();
-                    } else {
-                        speak(message);
-                    }
-                }
+                if (message != null) speak(message, true); // 일반적인 말하기는 UI를 가리지 않음
                 break;
             }
-
             case "goToLocation": {
-                // 파라미터 맵 추출
                 Object paramsObject = commandData.get("parameters");
                 if (paramsObject instanceof Map) {
                     Map<String, Object> params = (Map<String, Object>) paramsObject;
                     String location = (String) params.get("location");
-                    // Firestore에서 숫자는 Long으로 오는 경우가 많으므로 Long으로 받고 float으로 변환
+                    String message = (String) commandData.get("message");
                     Number angleNumber = (Number) params.get("angle");
-                    Float angle = (angleNumber != null) ? angleNumber.floatValue() : null;
+                    targetAngleOnArrival = (angleNumber != null) ? angleNumber.floatValue() : null;
 
-                    if (location != null) {
-                        goToLocationWithAngle(location, angle);
-                    } else {
-                        Log.w(TAG, "goToLocation command is missing 'location' parameter.");
+                    if (message != null && (message.contains("약") || message.contains("전달"))) {
+                        isWaitingForMedicationConfirmation = true;
                     }
+                    if (location != null) goToLocation(location);
                 }
                 break;
             }
-
             case "saveLocation": {
                 Object paramsObject = commandData.get("parameters");
                 if (paramsObject instanceof Map) {
-                    Map<String, Object> params = (Map<String, Object>) paramsObject;
-                    String locationName = (String) params.get("locationName");
+                    String locationName = (String) ((Map<?, ?>) paramsObject).get("locationName");
+                    if (locationName != null && !locationName.isEmpty()) saveLocationWithName(locationName);
+                }
+                break;
+            }
+            case "deleteLocation": {
+                Object paramsObject = commandData.get("parameters");
+                if (paramsObject instanceof Map) {
+                    String locationName = (String) ((Map<?, ?>) paramsObject).get("locationName");
                     if (locationName != null && !locationName.isEmpty()) {
-
-                        // 현재 로봇에 저장된 모든 위치 목록을 가져옴.
-                        List<String> currentLocations = robot.getLocations();
-
-                        // 저장하려는 이름이 이미 존재하는지 확인.
-                        boolean nameExists = false;
-                        for (String existingLocation : currentLocations) {
-                            if (existingLocation.equalsIgnoreCase(locationName)) {
-                                nameExists = true;
-                                break;
-                            }
-                        }
-
-                        // 이름의 존재 여부에 따라 분기 처리함.
-                        if (nameExists) {
-                            speak("'" + locationName + "' 이라는 이름은 이미 사용 중입니다. 다른 이름을 입력해주세요.");
-                        } else {
-                            boolean saveResult = robot.saveLocation(locationName);
-                            if (saveResult) {
-                                speak(locationName + " 위치를 저장했습니다.");
-                            } else {
-                                speak(locationName + " 위치 저장에 실패했습니다. 지도를 확인하고 다시 시도해주세요.");
-                            }
-                        }
+                        if (robot.deleteLocation(locationName)) speak("위치를 삭제했습니다.", true);
+                        else speak("위치 삭제에 실패했습니다.", true);
                     }
                 }
                 break;
             }
-
             case "skidJoy": {
                 Object paramsObject = commandData.get("parameters");
                 if (paramsObject instanceof Map) {
                     Map<String, Object> params = (Map<String, Object>) paramsObject;
                     Number linear = (Number) params.get("x");
                     Number angular = (Number) params.get("y");
-                    if (linear != null && angular != null) {
-                        robot.skidJoy(linear.floatValue(), angular.floatValue());
-                    }
+                    if (linear != null && angular != null) robot.skidJoy(linear.floatValue(), angular.floatValue());
                 }
                 break;
             }
-
-            case "deleteLocation": {
+            case "setAlarms": {
                 Object paramsObject = commandData.get("parameters");
                 if (paramsObject instanceof Map) {
                     Map<String, Object> params = (Map<String, Object>) paramsObject;
-                    String locationName = (String) params.get("locationName");
-                    if (locationName != null && !locationName.isEmpty()) {
-                        // 로봇의 deleteLocation 메소드 호출
-                        boolean deleteResult = robot.deleteLocation(locationName);
-                        // 결과에 따라 음성 피드백
-                        if (deleteResult) {
-                            speak(locationName + " 위치를 삭제했습니다.");
-                        } else {
-                            speak(locationName + " 위치 삭제에 실패했습니다.");
-                        }
+                    String wakeupTime = (String) params.get("wakeupTime");
+                    String medicationTime = (String) params.get("medicationTime");
+                    if (wakeupTime != null) {
+                        String[] parts = wakeupTime.split(":");
+                        setAlarm(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), "WAKE_UP");
                     }
+                    if (medicationTime != null) {
+                        String[] parts = medicationTime.split(":");
+                        setAlarm(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), "MEDICATION");
+                    }
+                    speak("알람이 설정되었습니다.", true);
                 }
                 break;
             }
-
-            default: {
-                Log.w(TAG, "Unknown command received: " + command);
+            case "medicationConfirmed": {
+                speak("네, 약 복용을 확인했습니다. 잘 하셨어요!", true);
                 break;
             }
+            default:
+                Log.w(TAG, "Unknown command: " + command);
+                break;
         }
     }
+
 
     // Feat: 위치 이동 및 도착 후 회전 기능
-    private void goToLocationWithAngle(String location, Float angle) {
-        List<String> savedLocations = robot.getLocations();
-        String matchedLocation = null;
-
-        // 대소문자를 구분하지 않고 실제 저장된 위치 이름을 찾음
-        for (String savedLoc : savedLocations) {
-            if (savedLoc.equalsIgnoreCase(location)) {
-                matchedLocation = savedLoc; // 실제 저장된 이름(대소문자 포함)을 저장
-                break;
-            }
-        }
-
-        // 실제 저장된 위치를 찾았을 경우
-        if (matchedLocation != null) {
-            this.targetAngleOnArrival = angle;
-            // 실제 저장된 이름으로 TTS와 goTo 명령을 실행
-            speak(matchedLocation + "(으)로 이동합니다.");
-            robot.goTo(matchedLocation);
-        } else {
-            // 위치를 찾지 못했을 경우
-            String errorMessage = "오류: '" + location + "' 위치가 저장되어 있지 않습니다.";
-            speak(errorMessage);
-            Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show();
-            this.targetAngleOnArrival = null;
-        }
+    private void goToLocation(String location) {
+        String matchedLocation = robot.getLocations().stream()
+                .filter(loc -> loc.equalsIgnoreCase(location))
+                .findFirst().orElse(null);
+        if (matchedLocation != null) robot.goTo(matchedLocation);
+        else speak("오류: '" + location + "' 위치가 저장되어 있지 않습니다.", true);
     }
 
-    private void clearCommandInFirestore(DocumentReference userDocRef) {
+    private void saveLocationWithName(String locationName) {
+        boolean nameExists = robot.getLocations().stream().anyMatch(loc -> loc.equalsIgnoreCase(locationName));
+        if (nameExists) speak("'" + locationName + "' 이라는 이름은 이미 사용 중입니다.", true);
+        else if (robot.saveLocation(locationName)) speak(locationName + " 위치를 저장했습니다.", true);
+        else speak(locationName + " 위치 저장에 실패했습니다.", true);
+    }
+
+
+    private void clearCommandInFirestore() {
+        if (userDocRef == null) return;
         Map<String, Object> resetCommand = new HashMap<>();
         resetCommand.put("command", "none");
-        resetCommand.put("message", "Command cleared");
         resetCommand.put("timestamp", FieldValue.serverTimestamp());
-
-        userDocRef.update("temiCommand", resetCommand)
-                .addOnSuccessListener(aVoid -> Log.d(TAG, "Command field successfully cleared!"))
-                .addOnFailureListener(e -> Log.w(TAG, "Error clearing command field", e));
+        userDocRef.update("temiCommand", resetCommand);
     }
 
     @Override
@@ -340,11 +270,6 @@ public class HomeActivity extends AppCompatActivity implements
 
     @Override
     public void onConversationAttaches(boolean b) {
-
-    }
-
-    @Override
-    public void onNlpCompleted(@NonNull NlpResult nlpResult) {
 
     }
 
@@ -370,7 +295,7 @@ public class HomeActivity extends AppCompatActivity implements
 
         switch (status) {
             case OnGoToLocationStatusChangedListener.START:
-                speak(location + "으로 이동을 시작합니다.");
+                speak(location + "으로 이동을 시작합니다.", true);
                 break;
             case OnGoToLocationStatusChangedListener.CALCULATING:
                 // 경로 계산 중
@@ -379,15 +304,19 @@ public class HomeActivity extends AppCompatActivity implements
                 // 이동 중
                 break;
             case OnGoToLocationStatusChangedListener.COMPLETE:
-                speak(location + "에 도착했습니다.");
+                speak(location + "에 도착했습니다.", true);
                 if (targetAngleOnArrival != null) {
-                    speak(targetAngleOnArrival + "도 회전합니다.");
                     robot.turnBy(targetAngleOnArrival.intValue(), 1.0f);
                     targetAngleOnArrival = null;
                 }
+
+                if (isWaitingForMedicationConfirmation) {
+                    speak("어르신, 약은 다 드셨나요? 다 드셨으면 '먹었어'라고 말씀해주세요.", false);
+                }
+
                 break;
             case OnGoToLocationStatusChangedListener.ABORT:
-                speak("이동이 취소되었습니다.");
+                speak("이동이 취소되었습니다.", true);
                 targetAngleOnArrival = null;
                 break;
         }
@@ -421,19 +350,10 @@ public class HomeActivity extends AppCompatActivity implements
         }
     }
 
-    public void speak(String textToSpeak) {
-        if (robot == null) {
-            Log.e(TAG, "Robot instance is not initialized!");
-            return;
-        }
-
-        if (textToSpeak != null && !textToSpeak.isEmpty()) {
-            TtsRequest ttsRequest = TtsRequest.create(textToSpeak, true);
-            robot.speak(ttsRequest);
-            Log.d(TAG, "Speaking: " + textToSpeak);
-        } else {
-            Log.d(TAG, "Speak command received with empty text.");
-        }
+    private void speak(String text, boolean showOnConversationLayer) {
+        if (text == null || text.isEmpty()) return;
+        TtsRequest ttsRequest = TtsRequest.create(text, showOnConversationLayer);
+        robot.speak(ttsRequest);
     }
 
     @Override
@@ -457,7 +377,7 @@ public class HomeActivity extends AppCompatActivity implements
             batteryUpdates.put("robotState.batteryPercentage", currentPercentage);
             batteryUpdates.put("robotState.isCharging", isCurrentlyCharging);
 
-            // 충전 중일 때만 상태 메시지를 오버라이드
+            // 충전 중일 때만 상태 메시지를 오버라이드함.
             if (isCurrentlyCharging) {
                 batteryUpdates.put("robotState.statusMessage", "충전 중");
             }
@@ -471,6 +391,54 @@ public class HomeActivity extends AppCompatActivity implements
             // 마지막 상태 업데이트
             lastKnownBatteryPercentage = currentPercentage;
             lastKnownChargingStatus = isCurrentlyCharging;
+        }
+    }
+
+    @Override
+    public void onNlpCompleted(@NonNull NlpResult nlpResult) {
+        String recognizedText = nlpResult.action;
+        Log.d(TAG, "Nlp Result: " + recognizedText);
+        if (isWaitingForMedicationConfirmation) {
+            if (recognizedText != null && (recognizedText.contains("먹었어") || recognizedText.contains("먹었다"))) {
+                confirmMedicationTaken();
+                isWaitingForMedicationConfirmation = false;
+            }
+        }
+    }
+
+    private void confirmMedicationTaken() {
+        speak("네, 알겠습니다. 복용 완료로 기록할게요.", true);
+        if (userDocRef != null) {
+            String todayDate = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
+            userDocRef.update("lastMedicationTakenDate", todayDate);
+        }
+    }
+
+    private void setAlarm(int hour, int minute, String alarmType) {
+        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        Intent intent = new Intent(this, AlarmReceiver.class);
+        String message = "";
+        int requestCode = 0;
+        if ("WAKE_UP".equals(alarmType)) {
+            message = "어르신, 좋은 아침입니다! 일어나실 시간이에요.";
+            requestCode = 1001;
+        } else if ("MEDICATION".equals(alarmType)) {
+            message = "어르신, 약 드실 시간입니다.";
+            requestCode = 1002;
+        }
+        intent.putExtra("ALARM_MESSAGE", message);
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(this, requestCode, intent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        Calendar calendar = Calendar.getInstance();
+        calendar.set(Calendar.HOUR_OF_DAY, hour);
+        calendar.set(Calendar.MINUTE, minute);
+        calendar.set(Calendar.SECOND, 0);
+        if (calendar.getTimeInMillis() <= System.currentTimeMillis()) {
+            calendar.add(Calendar.DAY_OF_MONTH, 1);
+        }
+        try {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pendingIntent);
+        } catch (SecurityException e) {
+            Toast.makeText(this, "알람 설정 권한이 없습니다.", Toast.LENGTH_SHORT).show();
         }
     }
 }
