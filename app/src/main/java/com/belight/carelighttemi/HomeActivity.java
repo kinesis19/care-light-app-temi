@@ -295,6 +295,28 @@ public class HomeActivity extends AppCompatActivity implements
         Log.i(TAG, "onGoToLocationStatusChanged: Received status '" + status + "' FOR location '" + location + "'. Description: " + description);
         Toast.makeText(this, location + "으로 이동: " + status, Toast.LENGTH_SHORT).show();
 
+        if (userDocRef != null) {
+            Map<String, Object> stateUpdate = new HashMap<>();
+            String statusMessage;
+            switch (status) {
+                case OnGoToLocationStatusChangedListener.START:
+                case OnGoToLocationStatusChangedListener.GOING:
+                    statusMessage = location + "으로 이동 중";
+                    break;
+                case OnGoToLocationStatusChangedListener.COMPLETE:
+                    statusMessage = location; // 도착 완료 시, 현재 위치는 목적지 이름
+                    break;
+                case OnGoToLocationStatusChangedListener.ABORT:
+                    statusMessage = "이동 취소됨";
+                    break;
+                default:
+                    statusMessage = "상태 확인 중";
+                    break;
+            }
+            stateUpdate.put("robotState.currentLocation", statusMessage);
+            userDocRef.update(stateUpdate);
+        }
+
         switch (status) {
             case OnGoToLocationStatusChangedListener.START:
                 speak(location + "으로 이동을 시작합니다.", true);
