@@ -4,6 +4,8 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.util.Log;
 import android.widget.Toast;
+import android.os.Handler;
+import android.os.Looper;
 
 import android.app.AlarmManager;
 import android.app.PendingIntent;
@@ -311,12 +313,21 @@ public class HomeActivity extends AppCompatActivity implements
                 }
 
                 if (isWaitingForMedicationConfirmation) {
-                    speak("어르신, 약은 다 드셨나요? 다 드셨으면 '먹었어'라고 말씀해주세요.", false);
+                    isWaitingForMedicationConfirmation = false;
+
+                    speak("어르신, 약 드시고 화면의 버튼을 눌러주세요.", true);
+
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        Intent intent = new Intent(HomeActivity.this, MedicationConfirmActivity.class);
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(intent);
+                    }, 2000); // 2초 딜레이
                 }
 
                 break;
             case OnGoToLocationStatusChangedListener.ABORT:
                 speak("이동이 취소되었습니다.", true);
+                isWaitingForMedicationConfirmation = false;
                 targetAngleOnArrival = null;
                 break;
         }
@@ -396,14 +407,7 @@ public class HomeActivity extends AppCompatActivity implements
 
     @Override
     public void onNlpCompleted(@NonNull NlpResult nlpResult) {
-        String recognizedText = nlpResult.action;
-        Log.d(TAG, "Nlp Result: " + recognizedText);
-        if (isWaitingForMedicationConfirmation) {
-            if (recognizedText != null && (recognizedText.contains("먹었어") || recognizedText.contains("먹었다"))) {
-                confirmMedicationTaken();
-                isWaitingForMedicationConfirmation = false;
-            }
-        }
+
     }
 
     private void confirmMedicationTaken() {
